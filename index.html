@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Will It Rain On My Parade?</title>
+
+  <!-- Leaflet & Chart.js CDNs -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <style>
+    :root {
+      --bg:#0b3a57; --card:#ffffff; --muted:#eef3f7; --primary:#1e88e5; --accent:#ff7a59;
+      --ok:#14b8a6; --warn:#f59e0b; --bad:#ef4444; --text:#102a43;
+      --radius:16px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+      background:#f6fafc; color:var(--text);
+    }
+    header {
+      background: linear-gradient(90deg, var(--bg), #145c7a);
+      color:#fff; padding:24px 18px; display:flex; align-items:center; justify-content:space-between;
+    }
+    header h1 { margin:0; font-weight:800; letter-spacing:.3px; }
+    .container { padding:20px; max-width:1200px; margin:0 auto; }
+    .grid { display:grid; grid-template-columns: 360px 1fr; gap:20px; }
+    .card {
+      background:var(--card); border-radius:var(--radius); box-shadow: 0 8px 24px rgba(16,42,67,.08);
+      padding:18px;
+    }
+    label { display:block; font-weight:600; margin:10px 0 6px; }
+    input[type="text"], input[type="date"] {
+      width:100%; padding:12px 14px; border:1px solid #dbe4ea; border-radius:12px; outline:none;
+      background:#fff;
+    }
+    button {
+      margin-top:16px; width:100%; padding:12px 16px; border:0; border-radius:12px;
+      background:var(--primary); color:#fff; font-weight:700; cursor:pointer;
+    }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .pill { display:inline-flex; align-items:center; gap:8px; border-radius:999px; padding:8px 12px; font-weight:700; }
+    .row { display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; }
+    .pill .pct { margin-left:auto; font-variant-numeric: tabular-nums; }
+    .legend { font-size:12px; color:#556; margin-top:10px; }
+    #map { height:320px; border-radius:12px; }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Will It Rain On My Parade?</h1>
+  <nav>Home · About · Team</nav>
+</header>
+
+<div class="container">
+  <div class="grid">
+
+    <!-- Colonne gauche : Entrée -->
+    <section class="card">
+      <h2 style="margin:0 0 6px">Location & Date</h2>
+      <p class="legend">Tape un lieu (ex: Paris, France) puis choisis une date.</p>
+
+      <label for="place">Location</label>
+      <input id="place" type="text" placeholder="Paris, France" value="Paris, France"/>
+
+      <label for="date">Date</label>
+      <input id="date" type="date" />
+
+      <button id="checkBtn">Check Weather Probability</button>
+
+      <div class="card" style="background:var(--muted); margin-top:14px">
+        <strong>Tips</strong>
+        <p style="margin:.3rem 0 0; font-size:14px">
+          Le calcul utilise la climatologie NASA POWER du mois choisi (moyennes historiques).
+        </p>
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <canvas id="barChart" height="180"></canvas>
+      </div>
+    </section>
+
+    <!-- Colonne droite : Résultats -->
+    <section class="card">
+      <div class="row" id="pillsRow">
+        <!-- Pills dynamiques -->
+      </div>
+
+      <h3 style="margin:18px 0 8px">Map</h3>
+      <div id="map"></div>
+
+      <h3 style="margin:18px 0 8px">Temperature & Precipitation (monthly mean)</h3>
+      <canvas id="lineChart" height="220"></canvas>
+    </section>
+
+  </div>
+</div>
+
+<script>
+  // ====== State
+  let map, marker, lineChart, barChart;
+
+  // ====== Init map
+  function initMap(lat=48.8566, lon=2.3522) {
+    map = L.map('map').setView([lat, lon], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+    marker = L.marker([lat, lon]).addTo(map);
+  }
+
+  // ====== Simple geocode via Nominatim
+  async function geocode(q) {
+    const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`);
+    const j = await r.json();
+    if (!j.length) throw new Error("Location not found");
+    const { lat, lon, display_name } = j[0];
+    return { lat: +lat, lon: +lon, label: display_name };
+  }
+
+  // ====== UI pill helper
+  function pill(label, pct, tone) {
+    const bg = tone === "bad" ? "var(--bad)"
+            : tone === "warn" ? "var(--warn)"
+            : "var(--ok)";
+    return `
+      <div class="pill" style="background:${bg}; color:white;">
+        <span>${label}</span>
+        <span class="pct">${pct}%</span>
+      </div>`;
+  }
+
+  // ====== Charts
+  function upsertLineChart(monthIdx, raw) {
+    const labels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const tData = Array(12).fill(null);
+    const pData = Array(12).fill(null);
+    // Nous ne connaissons que le mois demandé → on duplique pour aperçu
+    if (raw.T2M != null) tData[monthIdx-1] = raw.T2M;
+    if (raw.PRECTOT != null) pData[monthIdx-1] = raw.PRECTOT;
+
+    const data = {
+      labels,
+      datasets: [
+        { label:"Temp (°C)", data:tData, yAxisID:"y" },
+        { label:"Precip (mm/d)", data:pData, yAxisID:"y1" }
+      ]
+    };
+    const opts = {
+      responsive:true,
+      scales: {
+        y: { position:"left", beginAtZero:true },
+        y1:{ position:"right", beginAtZero:true, grid:{ drawOnChartArea:false } }
+      },
+      plugins:{ legend:{ position:"bottom" } }
+    };
+    if (lineChart) { lineChart.data = data; lineChart.update(); }
+    else { lineChart = new Chart(document.getElementById("lineChart"), { type:"line", data, options:opts }); }
+  }
+
+  function upsertBar(prob) {
+    const labels = ["Very Hot","Very Cold","Very Windy","Very Humid","Uncomfortable","Rainy"];
+    const vals   = [prob.veryHot, prob.veryCold, prob.veryWindy, prob.veryHumid, prob.veryUncomfortable, prob.rainy];
+    const data = { labels, datasets: [{ label:"Probability (%)", data: vals }] };
+    const opts = { responsive:true, scales:{ y:{ beginAtZero:true, max:100 } }, plugins:{ legend:{ display:false } } };
+    if (barChart) { barChart.data = data; barChart.update(); }
+    else { barChart = new Chart(document.getElementById("barChart"), { type:"bar", data, options:opts }); }
+  }
+
+  // ====== Main handler
+  async function run() {
+    const btn = document.getElementById("checkBtn");
+    const place = document.getElementById("place").value.trim();
+    const date  = document.getElementById("date").value;
+    if (!place || !date) return alert("Saisis un lieu et une date.");
+
+    btn.disabled = true;
+    try {
+      const { lat, lon, label } = await geocode(place);
+
+      // Update map
+      map.setView([lat, lon], 10);
+      marker.setLatLng([lat, lon]).bindPopup(label);
+
+      // Call backend
+      const api = `http://localhost:5174/api/probabilities?lat=${lat}&lon=${lon}&date=${encodeURIComponent(date)}`;
+      const r = await fetch(api);
+      const j = await r.json();
+      if (j.error) throw new Error(j.error);
+
+      // Pills
+      const row = document.getElementById("pillsRow");
+      row.innerHTML = [
+        pill("Very Hot", j.veryHot, j.veryHot>=60?"bad": j.veryHot>=30?"warn":"ok"),
+        pill("Very Cold", j.veryCold, j.veryCold>=60?"bad": j.veryCold>=30?"warn":"ok"),
+        pill("Very Windy", j.veryWindy, j.veryWindy>=60?"bad": j.veryWindy>=30?"warn":"ok"),
+        pill("Very Humid", j.veryHumid, j.veryHumid>=60?"bad": j.veryHumid>=30?"warn":"ok"),
+        pill("Uncomfortable", j.veryUncomfortable, j.veryUncomfortable>=60?"bad": j.veryUncomfortable>=30?"warn":"ok"),
+        pill("Rainy", j.rainy, j.rainy>=60?"bad": j.rainy>=30?"warn":"ok"),
+      ].join("");
+
+      // Charts
+      upsertBar(j);
+      upsertLineChart(j.month, j.raw);
+    } catch (e) {
+      console.error(e);
+      alert("Erreur: " + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ====== Boot
+  document.getElementById("date").valueAsDate = new Date();
+  document.getElementById("checkBtn").addEventListener("click", run);
+  initMap(); // default Paris
+</script>
+</body>
+</html>

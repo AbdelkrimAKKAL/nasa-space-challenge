@@ -1,0 +1,20 @@
+{
+  "name": "will-it-rain-on-my-parade",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm-run-all --parallel dev:server dev:static",
+    "dev:server": "node server.js",
+    "dev:static": "npx http-server ./public -p 5173 -c-1"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1",
+    "npm-run-all": "^4.1.5"
+  }
+}
